@@ -4,17 +4,22 @@ from torch.nn import Parameter
 from ipdb import set_trace
 
 class AsyncAlphazero:
-    def __init__(self, model, num_slices=10, c=1, cycles_per_batch=10, num_sims=50, reset_every=20):
+    def __init__(self, model, num_slices=10, c=1, cycles_per_batch=10, num_sims=50, lr=.01,
+        num_steps=10):
         self.model = model
+        self.orig_orig_params = list(model.parameters())        
         self.orig_params = list(model.parameters())
         self.flattened_param_sizes = []
 
         self.num_sims = num_sims
 
+        self.num_steps = num_steps
+
+        self.lr = lr
+
         self.c = c       
 
         self.count = 0
-        self.reset_every = reset_every
 
         self.cycles_per_batch = cycles_per_batch
 
@@ -26,107 +31,103 @@ class AsyncAlphazero:
             temp.append(param.view(-1))
             self.flattened_param_sizes.append(param.view(-1).size())
 
-        flattened_params = torch.cat(temp, dim=0).detach().data.numpy()
+        params_shape = torch.cat(temp, dim=0).detach().data.numpy().shape
+        self.flattened_params = np.random.uniform(size=params_shape) -.5
+        self.orig_flattened_params = np.copy(self.flattened_params)
         
         #need to shift these back by -.5 at the end to mean 0 them
-        self.params = np.random.uniform(size=(flattened_params.shape[0], 1))
         # self.params = np.ones(shape=(flattened_params.shape[0], 1))
         # self.params = np.zeros(shape=(flattened_params.shape[0], 1))#+\
             # (1/flattened_params.shape[0])
 
-        #initialize to 2 so that UCT works on the first step
-        self.child_stats = self.create_stats_tensor()
+        self.reset_az()
 
+        #initialize to 2 so that UCT works on the first step
+        
+        self.trajectory_indices = []
 
         # self.curr_params = self.get_parameters(view)
     
+    def reset_az(self):
+        self.parent_visits = 2
+        self.step_nodes = [self.create_stats_tensor() for _ in range(self.num_steps)]
+
     def create_stats_tensor(self):
-        self.parent_visits = 2        
-        child_priors = np.zeros((len(self.params), len(self.linspace)))
+        child_priors = np.zeros((len(self.flattened_params), len(self.linspace)))
         child_priors[:] = self.linspace
-        child_priors = np.log(np.abs(self.params - child_priors))
+        child_priors = np.log(np.abs(np.expand_dims(self.flattened_params, -1)  - child_priors))
         child_priors /= np.expand_dims(np.sum(child_priors, axis=1), -1)
         child_priors = np.expand_dims(child_priors, -1)
 
-        child_stats = np.zeros(shape=(child_priors.shape[0], child_priors.shape[1], 5))
+        child_stats = np.zeros(shape=((len(self.flattened_params), len(self.linspace), 4)))
         child_stats = np.concatenate((child_stats, child_priors), axis=-1)
-        child_stats[:, :, 3] = self.c * child_stats[:, :, 5] * \
-             (np.log(self.parent_visits)*(1/(1 + child_stats[:, :, 0])))
+        child_stats[:, :, 3] = self.c * child_stats[:, :, 4]*(np.log(self.parent_visits)*(1/(1 + child_stats[:, :, 0])))
 
         return child_stats
 
-    def get_uct_indices(self):
+    def get_uct_indices(self, step_node, visits = False):
         #update UCT scores
         # set_trace()
-        self.child_stats[:, :, 4] = self.child_stats[:, :, 2] + self.child_stats[:, :, 3]
         #view just the UCT scores
-        uct_view = self.child_stats[:, :, 4]
+        uct_view = step_node[:, :, 2] + step_node[:, :, 3]
         #argmax the max for each param
+        if visits:
+            uct_view = step_node[:, :, 0]
         indices = np.argmax(uct_view, axis=1)
         return indices
 
-    def update_nodes(self, reward, update_params=False):
-        indices = self.get_uct_indices()
-        view = self.child_stats[range(len(indices)), indices]
-        
-        #0=N
-        #1=W
-        #2=Q
-        #3=
-        view[:, 0] += 1 #visits
-        view[:, 1] += reward #batch accuracy
-        view[:, 2] = view[:, 1]/view[:, 0] #Q = W/N
-            #can do the above with all of the updated indices rather than individually
-        view[:, 3] = self.c * view[:, 5] * \
-            (np.log(self.parent_visits)*(1/(view[:, 0])))
+    def update_params_step(self, step_node, visits=False):
+        indices = self.get_uct_indices(step_node, visits)
+        self.update_model(self.get_parameters(indices))
+        if not visits: 
+            self.trajectory_indices.append(indices)
 
-        # *view[:, 5] * \
+    def backup_step(self, reward):
+        for i, indices in enumerate(self.trajectory_indices):
+            #so what do I want to do, I want the indices for each of the steps
+            #to get updated. so I want to save the indices for each step
+            view = self.step_nodes[i][range(len(indices)), indices]
+            view[:, 0] += 1 #visits
+            view[:, 1] += reward #batch accuracy
+            view[:, 2] = view[:, 1]/view[:, 0] #Q = W/N
+                #can do the above with all of the updated indices rather than individually
+            view[:, 3] = self.c * view[:, 4]*(np.log(self.parent_visits)*(1/(view[:, 0])))
+            self.step_nodes[i][range(len(indices)), indices] = view
 
-        self.child_stats[range(len(indices)), indices] = view
-
+        #uhhh is the parent visits thing right?, I think I need to use the visits 
+        #from the prev tracjectory
         self.parent_visits += 1
+        self.trajectory_indices = [] 
+        self.flattened_params = np.array(self.orig_flattened_params)
 
-        self.curr_params = self.get_parameters(indices, update_params)
+        #well let me think about it
+        #the parent_visits for all steps will be the same
+        #we are actually comparing to the parent vistis so yeah its fine
 
-    def update_model(self):
+    def update_model(self, param_groups):
         for i, param in enumerate(self.model.parameters()):
-            param.data = self.curr_params[i]
+            param.data = param_groups[i]
             # assert (param.data == self.curr_params[i]).all()
 
-    def step(self, reward, update_params=False):
-        self.update_nodes(reward, update_params)
-        # if self.count % self.reset_every == 0 and self.count != 0:
-            # self.params = np.expand_dims(self.params, -1)+1e-7
-            # self.child_stats = self.create_stats_tensor()
-        self.update_model()
+    # def step(self, reward, update_params=False):
+    #     # self.update_nodes(reward, update_params)
+    #     # if self.count % self.reset_every == 0 and self.count != 0:
+    #         # self.params = np.expand_dims(self.params, -1)+1e-7
+    #         # self.child_stats = self.create_stats_tensor()
+    #     self.update_model()
         
 
         #so what is the issue. this system gets a lot of visits since it 
         #is 
-        
 
-    def get_parameters(self, indices, update_params=False):
+    def get_parameters(self, indices):
         #.-5 makes it mean 0 between -.5 and .5
         # set_trace()        
         #so lets think about the idea to convert to the 
         #number of visits
+        self.flattened_params += ((self.linspace[indices] - .5)*self.lr)
 
-        if update_params:
-            #UCT scores
-            #so how was I doing it, I was
-            # self.child_stats[:, :, 0] /= np.expand_dims(np.sum(self.child_stats[:, :, 0], axis=1), -1)
-            # visits = self.child_stats[:, :, 0] 
-            visits = np.exp(self.child_stats[:, :, 0])
-            visits /= np.expand_dims(np.sum(visits, axis=1), -1)
-            parameters = (self.linspace * visits)
-            parameters = np.sum(parameters, axis=1)
-            self.params = np.random.uniform(size=(parameters.shape[0], 1))
-
-            parameters -= .5
-            print(parameters)
-        else:
-            self.params = self.linspace[indices]
-            parameters = self.params - .5
+        parameters = self.flattened_params
             # self.child_stats[:, :, 5] = np.random.uniform(size=(parameters.shape[0], 
             #     len(self.linspace)))
         starting_idx = 0

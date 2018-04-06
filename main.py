@@ -97,26 +97,34 @@ def test():
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
-
+from ipdb import set_trace
 def ucb_train(az):
+    az.model.eval()    
     for batch_idx, (_data, _target) in enumerate(train_loader):
         for _ in range(az.cycles_per_batch):
             batch_total = _target.size()[0]
             if args.cuda:
                 _data, _target = _data.cuda(), _target.cuda()
             data, target = Variable(_data), Variable(_target)
-            for _ in range(az.num_sims):
-                az.model.eval()
-                output = az.model(data)
-                pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
-                batch_correct = pred.eq(target.data.view_as(pred)).long().cpu().sum()
-                batch_accuracy = batch_correct/batch_total
-                
-
-                az.step(batch_accuracy)
-
-            # az.step(batch_accuracy, update_params=True)
+            for s in range(az.num_sims):
+                print("Sim {} of {}".format(s, az.num_sims))
+                for i in range(az.num_steps):
+                    az.update_params_step(az.step_nodes[i])                    
+                    output = az.model(data)
+                    pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+                    batch_correct = pred.eq(target.data.view_as(pred)).long().cpu().sum()
+                    batch_accuracy = batch_correct/batch_total
+                az.backup_step(batch_accuracy)
+            for step_node in az.step_nodes:
+                az.update_params_step(step_node, visits=True)
+            output = az.model(data)
+            pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            batch_correct = pred.eq(target.data.view_as(pred)).long().cpu().sum()
+            batch_accuracy = batch_correct/batch_total
             print('Batch: {}, Batch Accuracy: {:.3f}%'.format(batch_idx, batch_accuracy))
+            az.reset_az()
+            
+            # az.step(batch_accuracy, update_params=True)
             
 
                 # if batch_idx == 9:
@@ -148,7 +156,13 @@ def ucb_test(az):
 #UCB prop
 from async_alphazero import AsyncAlphazero
 
-az = AsyncAlphazero(model=model, num_slices=5, c=3, cycles_per_batch=100, num_sims=10, reset_every=500)
+az = AsyncAlphazero(model=model, 
+num_slices=4, 
+c=10, 
+cycles_per_batch=100, 
+num_sims=40,
+num_steps=5,
+lr=1)
 
 #would be good if we had a lstm or something which produced a prior, and it was
 #improved by improved search probas
