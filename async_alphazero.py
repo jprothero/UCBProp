@@ -35,16 +35,15 @@ class AsyncAlphazero:
             # (1/flattened_params.shape[0])
 
         #initialize to 2 so that UCT works on the first step
-        self.parent_visits = 2
-
         self.child_stats = self.create_stats_tensor()
 
 
         # self.curr_params = self.get_parameters(view)
     
     def create_stats_tensor(self):
+        self.parent_visits = 2        
         child_priors = np.zeros((len(self.params), len(self.linspace)))
-        child_priors = self.linspace
+        child_priors[:] = self.linspace
         child_priors = np.log(np.abs(self.params - child_priors))
         child_priors /= np.expand_dims(np.sum(child_priors, axis=1), -1)
         child_priors = np.expand_dims(child_priors, -1)
@@ -96,10 +95,15 @@ class AsyncAlphazero:
 
     def step(self, reward, update_params=False):
         self.update_nodes(reward, update_params)
-        if self.count % self.reset_every == 0 and self.count != 0:
-            self.child_stats = self.create_stats_tensor()
+        # if self.count % self.reset_every == 0 and self.count != 0:
+            # self.params = np.expand_dims(self.params, -1)+1e-7
+            # self.child_stats = self.create_stats_tensor()
         self.update_model()
+        
 
+        #so what is the issue. this system gets a lot of visits since it 
+        #is 
+        
 
     def get_parameters(self, indices, update_params=False):
         #.-5 makes it mean 0 between -.5 and .5
