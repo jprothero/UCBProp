@@ -42,27 +42,66 @@ class AsyncAlphazero:
     
     def create_stats_tensor(self):
         self.parent_visits = 2        
-        child_priors = np.zeros((len(self.params), len(self.linspace)))
-        child_priors[:] = self.linspace
-        child_priors = np.log(np.abs(self.params - child_priors))
-        child_priors /= np.expand_dims(np.sum(child_priors, axis=1), -1)
-        child_priors = np.expand_dims(child_priors, -1)
+        # child_priors = np.zeros((len(self.params), len(self.linspace)))
+        # child_priors[:] = self.linspace
+        # child_priors = np.log(np.abs(self.params - child_priors))
+        # child_priors /= np.expand_dims(np.sum(child_priors, axis=1), -1)
+        # child_priors = np.expand_dims(child_priors, -1)
 
-        child_stats = np.zeros(shape=(child_priors.shape[0], child_priors.shape[1], 5))
-        child_stats = np.concatenate((child_stats, child_priors), axis=-1)
-        child_stats[:, :, 3] = self.c * child_stats[:, :, 5] * \
-             (np.log(self.parent_visits)*(1/(1 + child_stats[:, :, 0])))
+        child_stats = np.zeros(shape=(len(self.params), len(self.linspace), 3))
+        # child_stats = np.concatenate((child_stats, child_priors), axis=-1)
+        # child_stats[:, :, 3] = self.c * child_stats[:, :, 5] * \
+        #      (np.log(self.parent_visits)*(1/(1 + child_stats[:, :, 0])))
+
+        # child_stats[:, :, 3] /= np.expand_dims(np.sum(child_stats[:, :, 3], axis=1), -1)
+
+        child_stats[:, :, 0] += 1
+        child_stats[:, :, 1] += .01
+        child_stats[:, :, 2] += child_stats[:, :, 1] / child_stats[:, :, 0]
 
         return child_stats
 
     def get_uct_indices(self):
         #update UCT scores
         # set_trace()
-        self.child_stats[:, :, 4] = self.child_stats[:, :, 2] + self.child_stats[:, :, 3]
-        #view just the UCT scores
-        uct_view = self.child_stats[:, :, 4]
-        #argmax the max for each param
-        indices = np.argmax(uct_view, axis=1)
+        #so lets see, we want the more that Q is close to 1 the less random it is
+        #is in theory if all Q's 0 1 we have 0 exploration
+        #right now we have the raw Q values, we get those and choose whether to
+        #take that argmax or not based on if Q - (0-1) > 0
+        #so that will happen only like ~30% of the time at first
+        #it should probaby be more.
+        #and also the difference between have .3 accuracy and .1 should be big, so we want
+        #to square or cube q
+        #also we probably want a moving average of what the average score is
+        #so the uniform's max is the current moving average
+        q_view = self.child_stats[:, :, 2]**10
+        #argmax Q's
+        q_indices = np.argmax(q_view, axis=1)
+        q_indices_values = q_view[range(q_view.shape[0]), q_indices]
+        #so I want the current average of the q_values
+        # average_q = np.mean(q_indices_values) #lower it
+        # max_q = np.max(q_indices_values) #lower it
+
+        #so if the Q value is below average it will always be explored
+        #otherwise it wont, one issue is that 
+
+        random = np.random.uniform(low = 0, high=1, size=q_indices.shape)
+
+        #so we could add a c to control how much c is 
+        u_view = (self.child_stats[:, :, 2]) / (2 + self.child_stats[:, :, 0])
+        # u_view /= np.expand_dims(np.sum(u_view, axis=1), 1)
+        u_indices = np.argmax(u_view, axis=1)
+        u_indices_values = u_view[range(u_view.shape[0]), u_indices]
+        # average_u = np.mean(u_indices_values)    
+        # max_u = np.max(u_indices_values)
+
+        # average_u = np.mean(u_indices_values)        
+        random2 = np.random.uniform(low=0, high=1,size=u_view.shape)
+        u_view -= random2
+        u_indices = np.argmax(u_view, axis=1)
+
+        indices = np.where((q_indices_values - random) > 0, q_indices, u_indices)
+
         return indices
 
     def update_nodes(self, reward, update_params=False):
@@ -76,15 +115,63 @@ class AsyncAlphazero:
         view[:, 0] += 1 #visits
         view[:, 1] += reward #batch accuracy
         view[:, 2] = view[:, 1]/view[:, 0] #Q = W/N
-            #can do the above with all of the updated indices rather than individually
         view[:, 3] = self.c * view[:, 5] * \
             (np.log(self.parent_visits)*(1/(view[:, 0])))
+        #view[:, 3] = view[:, 2]
+            #can do the above with all of the updated indices rather than individually
+
+        #view[:, 3] = #so we probably want the exploration to be relative to the average value
+        #so it will be 1 + Q
+
+        #so again we want the right hand side to be between 0 and 1 ideally
+        #Q is between 0 and 1
+        #1 - Q will be between 0 and 1
+        #we want to pick the choice which is 
+        #so maybe we alternate between picking by U score and by Q score
+        #so the Q score is the probability we pick the Q score
+        #Q score is how it is now
+        #U score should be some chance thing too
+        #so the chance of exploring an option is based on it's Q score, so .Q chance of 
+        #choosing that choice, we maybe need to normalize that
+
+        # np.log(self.parent_visits)*(1/(view[:, 0]))
 
         # *view[:, 5] * \
 
         self.child_stats[range(len(indices)), indices] = view
 
-        self.parent_visits += 1
+        #so lets see the reward is going to be between 0 and 1
+        #we need the right hand to be between 0 and 1
+        #so do we want it divided by num visits?
+        #basically we want it so that unexplored ones (low visits)
+        #have a higher value
+        #
+
+        # self.parent_visits += 1
+        # self.parent_visits = self.parent_visits % 10
+        # self.c += 5
+        # self.c = self.c % 50
+
+        #what do we want on the right side
+        #it needs to be between 0 and 1, and basically the more explorations the less value
+        #i.e. / by N
+        #we want exploration to be an empirically chosen constant, or a cylical thing,
+        #so maybe take away the log (parents all together)
+        #we need exploration factor to oscilate between 0 and 1
+        #so the closer to 1 the average reward is the less it will explore
+        #
+
+        #so in theory the more times we visits a node the lower the exploration value
+        #the issue here is that the exploitation side is always winning out
+        #so overtime parent visits is slowly increasing, i.e. slowing raising the value
+        #of exploring
+
+        #the bottom decreases the exploration value based on how many visits there are
+        #that is the main issue, is that we are visits all of the options a lot and their
+        #percentages get decreased a lot
+        #can I slow the growth of the bottom number, maybe log of it?
+
+        #so this will oscilate between 0 and 10
 
         self.curr_params = self.get_parameters(indices, update_params)
 
@@ -102,7 +189,7 @@ class AsyncAlphazero:
         
 
         #so what is the issue. this system gets a lot of visits since it 
-        #is 
+        #is a bander
         
 
     def get_parameters(self, indices, update_params=False):

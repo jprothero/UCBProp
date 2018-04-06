@@ -148,7 +148,7 @@ def ucb_test(az):
 #UCB prop
 from async_alphazero import AsyncAlphazero
 
-az = AsyncAlphazero(model=model, num_slices=5, c=3, cycles_per_batch=100, num_sims=10, reset_every=500)
+az = AsyncAlphazero(model=model, num_slices=2, c=10000, cycles_per_batch=100, num_sims=10, reset_every=500)
 
 #would be good if we had a lstm or something which produced a prior, and it was
 #improved by improved search probas
