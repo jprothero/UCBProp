@@ -154,15 +154,15 @@ def ucb_test(az):
 #     test()
 
 #UCB prop
-from async_alphazero import AsyncAlphazero
+# from async_alphazero import AsyncAlphazero
 
-az = AsyncAlphazero(model=model, 
-num_slices=4, 
-c=10, 
-cycles_per_batch=100, 
-num_sims=40,
-num_steps=5,
-lr=1)
+# az = AsyncAlphazero(model=model, 
+# num_slices=4, 
+# c=10, 
+# cycles_per_batch=100, 
+# num_sims=40,
+# num_steps=5,
+# lr=1)
 
 #would be good if we had a lstm or something which produced a prior, and it was
 #improved by improved search probas
@@ -170,5 +170,18 @@ lr=1)
 #so.... the issue is that they are sinking a lot because of the UCT always picking the same
 #that will severely limit the capacity of the net 
 
-ucb_train(az)
+# ucb_train(az)
 # ucb_test(az)
+
+from ipdb import set_trace
+from models import MetaLearner
+
+meta_net = MetaLearner(model, (1, 28, 28))
+
+for batch_idx, (data, target) in enumerate(train_loader):
+    if args.cuda:
+        data, target = data.cuda(), target.cuda()
+    data, target = Variable(data), Variable(target)
+    # optimizer.zero_grad()
+    _, batch_accuracy = meta_net(data, target, train=True)
+    print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
