@@ -17,8 +17,8 @@ import torch.nn.functional as F
 
 
 class MetaLearner(nn.Module):
-    def __init__(self, model, image_size, param_bottleneck=10,
-                 h_dims=64, num_hidden_layers=5):
+    def __init__(self, model, image_size, param_bottleneck=100,
+                 h_dims=128, num_hidden_layers=6):
         super(MetaLearner, self).__init__()
         self.model = model
         self.tanh = nn.Tanh()
@@ -52,7 +52,7 @@ class MetaLearner(nn.Module):
 
         self.image = ResBlock(R*C*CH, h_dims, linear=True)
 
-        res_blocks = [ResBlock(4608, h_dims, linear=True)]
+        res_blocks = [ResBlock(9216, h_dims, linear=True)]
         res_blocks.extend([ResBlock(h_dims, h_dims, linear=True)
                            for _ in range(num_hidden_layers-1)])
 
@@ -69,12 +69,12 @@ class MetaLearner(nn.Module):
         self.optim = optim.SGD(self.parameters(), lr=.1, momentum=.9, weight_decay=1e-6)
         # well no actually we need a different size for each out
 
-    def forward(self, inp, target, train=False, num_sims=40, num_slices=200, c=2, 
+    def forward(self, inp, target, train=False, num_sims=200, num_slices=5, c=2, 
             model_finetune=True, use_value_head=False):
         self.inp = inp
         self.target = target
-        self.c = 3
-        self.lr = .001
+        self.c = 1000
+        self.lr = .01
 
         if train:
             self.train()
@@ -142,7 +142,7 @@ class MetaLearner(nn.Module):
 
         self._add_prior(x, c)
 
-    def _add_prior(self, x, c, alpha=1, eps=.2):
+    def _add_prior(self, x, c, alpha=1, eps=1e-7):
         # noise = (np.random.dirichlet([alpha] * self.flat_shp*self.num_slices)-.5)*2
         # noise = noise.reshape((self.flat_shp, self.num_slices))
         child_priors = np.zeros((self.flat_shp, self.num_slices))
@@ -192,9 +192,9 @@ class MetaLearner(nn.Module):
 
         for _ in range(num_sims):
             indices = self.get_uct_indices(visits=False)
-            update = (self.linspace[indices] - .5)*2*self.lr
+            update = (self.linspace[indices] - .5)*2#*self.lr
             if use_value_head:
-                new_params = self.orig_flattened_params.clone() + update            
+                new_params = update # self.orig_flattened_params.clone() + update            
                 value = self.value(self.get_group_ins(new_params))
             else:
                 self.update_parameters(update)
@@ -206,15 +206,15 @@ class MetaLearner(nn.Module):
 
         for _ in range(num_sims*5):
             indices = self.get_uct_indices(visits=False)
-            update = (self.linspace[indices] - .5)*2*self.lr
+            update = (self.linspace[indices] - .5)*2#*self.lr
             update = torch.from_numpy(update).float()
-            new_params = self.orig_flattened_params.clone() + update            
+            new_params = update #self.orig_flattened_params.clone() + update            
             value = self.value(self.get_group_ins(new_params)).squeeze().detach().data.numpy()
 
             self.backup_step(indices, value)
 
         indices = self.get_uct_indices(visits=True)
-        update = (self.linspace[indices] - .5)*2*self.lr
+        update = (self.linspace[indices] - .5)*2#*self.lr
         self.update_parameters(update)
         self.model.eval()
         out, batch_accuracy = self.test()
@@ -248,7 +248,7 @@ class MetaLearner(nn.Module):
         orig_params = self.orig_flattened_params
         for group in list(self.model.parameters()):
             if not reset:
-                group.data += torch.from_numpy(update[start_idx:start_idx+group.data.view(-1).shape[0]]).float().resize_as(group)
+                group.data = torch.from_numpy(update[start_idx:start_idx+group.data.view(-1).shape[0]]).float().resize_as(group)
             else:
                 group.data = orig_params[start_idx:start_idx+group.data.view(-1).shape[0]].resize_as(group)
             start_idx += group.data.view(-1).shape[0]
