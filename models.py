@@ -285,6 +285,84 @@ class MetaLearner(nn.Module):
         #     curr_node = curr_node["children"][visits_idx]
         #     encoded_idx += 1
 
+        #soooo lets see...
+        #that one just didnt make much sense
+        #for a gan we have access a value function in that the discriminator is basically that
+        
+
+        #So I think I want my project to be:
+        #ENAS with differentiable plasticity and alpha zero, seems like it might replace maml
+
+        #but lets think about some of the other ideas I had
+        #a generator loss which learns the "ideal" picture for the current discriminator
+        #i.e. from the current generated thing it estimates the best version from the current one
+        #that honestly makes a lot more sense than what I was doing here with the logits or loss
+
+        #but I dont want to spend another half a day chasing a pipe dream
+        #I think it could maybe work and the experiment setup is mostly here
+
+        #so we can try that one, basically it would be a replacement or addition
+        #to the current generator training loss, where it will estimate a maximum value
+        #image close to the current one
+
+        #so we can try that now
+
+        #but the other idea I had was the MCTS gan idea
+
+        #so basically for a sequential generation (i.e. segments of audio)
+        #the generator keeps producing segments, and the discriminator
+        #sees a segment from the generator and the real song
+        #so it sequentially goes though a real song and a generated song
+        #and the goal is to make the generated song match the real song (without overfitting)
+
+        #both nets can have plasticity or be QRNNs so that they can remember recent events 
+        #in the song, i.e. not just generated segments in a void but have it construct a song
+
+        #the idea is that for each generation step, we generate a segment with a starting 
+        #sample (or seed) (we may need to save the network weights at this point and reload
+        # after each sim)
+
+        #so anyways based on the current seed, we continue to generate different seeded
+        #generations for the next step, 
+
+        #so for example we are at the root, the starting second
+        #then we UCT select the the seed (not sure what the prior would be)
+
+        #can we modify the Alpha zero formula a bit and maybe have it account for randomness?
+        #so we just randomly do trajectories, and whenever we hit a new segment backup?
+
+        #so I could imagine that for example we start doing a random simulation using
+        #seeded random noise
+
+        #then whenever we hit new seed backup
+        #then there will always be a choice for the net between new seed and 
+        #one of the existing ones
+
+        #so the policy would basically be probability of doing a new seed
+        #and basically we want to minimize regret
+
+        #so we want the difference between the highest Q and the newly generated seed would be
+        #the regret
+
+        #so the probability of doing a new seed would be trained to minimize the regret
+        #but we also need to consider that 
+
+        #but the basic idea is give the generator a head which outputs the probability of 
+        #being random. .. .. . .m aybe.. .  
+
+
+        #idk this is feeling a bit forced
+
+        #at the end of the day we want to try out some different generator outputs, see
+        #the value, and back propagate
+        #and to add in randomness we need a choice at every step between UCT selecting
+        #the best so far and a random new generation
+        #and then whenever the best one changes the children get reset (because its a new
+        # segment)
+
+        #alternatively we always create one new random sample, get the value from it
+        #using the discriminator and then UCT select like normal from there
+
         self.model.train()
         self.train()
         self.model_optim.zero_grad()
