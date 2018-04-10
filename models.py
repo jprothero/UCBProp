@@ -26,13 +26,15 @@ import torch.nn.functional as F
 
 
 class MetaLearner(nn.Module):
-    def __init__(self, model, image_size, param_bottleneck=200,
-                 h_dims=256, ae_dims=5, num_slices=1000, c=1, use_value=False):
+    def __init__(self, model, image_size, num_classes=10, param_bottleneck=200,
+                 h_dims=256, ae_dims=5, num_slices=10, c=1, use_value=False,
+                 model_optim=None):
         super(MetaLearner, self).__init__()
         self.use_value = False
         self.num_slices = num_slices
         self.c = c
         self.model = model
+        self.model_optim = model_optim
         self.tanh = nn.Tanh()
         self.h_dims = h_dims
 
@@ -71,7 +73,7 @@ class MetaLearner(nn.Module):
 
         self.encoder = ResBlock(h_dims*self.d, ae_dims, linear=True)
 
-        self.value = ValueHead(ae_dims, h_dims, self.d, 1)
+        self.value = ValueHead(num_classes, h_dims, self.d, 1)
 
         # res_blocks = [ResBlock(9216, h_dims, linear=True)]
         # res_blocks.extend([ResBlock(h_dims, h_dims, linear=True)
@@ -90,7 +92,7 @@ class MetaLearner(nn.Module):
 
         self.group_outs = nn.ModuleList(self.group_outs)
 
-        self.optim = optim.Adam(self.parameters(), lr=.01, weight_decay=1e-6)
+        self.optim = optim.Adam(self.parameters(), lr=.01, weight_decay=1e-5)
         # well no actually we need a different size for each out
 
     # idea:
@@ -112,6 +114,8 @@ class MetaLearner(nn.Module):
     # I think that is a lot more promising
 
     def forward(self, data, target):
+        self.model.train()
+        self.train()
         # so lets see... I have one number that in theory dictates all of the parameters(?lol)
 
         # so if I do an alphazero tweaking it can I optimize that?
@@ -132,38 +136,12 @@ class MetaLearner(nn.Module):
         # we regress the value head against the accuracy
         # we regress the parameter update against the alphazero improved search (t.b.implemeneted)
         # use the improved parameters, and optionally proceed with normal training, aka fine tune
-
-        self.orig_params = []
-        # group_in_stack = [self.image(inp.view(inp.shape[0], -1))]
-
-        group_in_stack = []
-
-        for group, group_in in zip(list(self.model.parameters()), self.group_ins):
-            self.orig_params.append(group.view(-1).clone())
-            x = group_in(group.view(1, -1)).squeeze()
-
-            group_in_stack.append(x)
-
-        self.orig_flattened_params = torch.cat(self.orig_params)
-
-        group_in_stack = torch.cat(group_in_stack).view(1, -1)
-
-        encoded = self.encoder(group_in_stack).squeeze()
-
-        new_flattened_params = []
-        for group_out in self.group_outs:
-            new_flattened_params.append(group_out(encoded).squeeze())
-
-        new_flattened_params = torch.cat(new_flattened_params)
-
-        self.optim.zero_grad()
-        reconstruction_loss = F.mse_loss(
-            new_flattened_params, self.orig_flattened_params)
-
-        # add alphazero stuff here
-
+        self.eval()
+        self.model.eval()
+        batch_logits = F.softmax(self.model(data), dim=1)
+        
         root_node = {
-            "children": None, "parent": None, "N": 2
+            "children": None, "parent": None, "N": 0
         }
 
         import sys
@@ -173,102 +151,130 @@ class MetaLearner(nn.Module):
         self.linspace = np.linspace(0, 1, self.num_slices)
 
         from tqdm import tqdm
-        value_loss = 0
         
-        new_encoded = encoded.clone()
+        batch_idx = 0
+        # new_logits = logits.clone()
 
-        num_sims = 100
-        real_idx = 0
-        while real_idx < len(encoded):
-            for _ in tqdm(range(num_sims)):
-                def do_sim(root_node, value_loss, use_value=False):
-                    encoded_copy = encoded.clone()
-                    curr_node = root_node
-                    exit_early = False
-                    prior_idx = 0
-                    while curr_node["children"] is not None:
-                        if prior_idx < (len(encoded_copy)-1):
-                            max_uct = -1e7
-                            max_uct_idx = None
-                            for i, child in enumerate(curr_node["children"]):
-                                child["U"] = (
-                                    self.c*child["P"]*np.log(curr_node["N"]))/(1 + child["N"])
-                                if (child["Q"] + child["U"]) > max_uct:
-                                    max_uct_idx = i
-                            curr_node = curr_node["children"][max_uct_idx]
-                            encoded_copy[prior_idx] = self.linspace[max_uct_idx]
-                            prior_idx += 1
+        new_logits_list = []
+
+        num_sims = 20
+        for _ in tqdm(range(data.shape[0])):
+            value_loss = 0
+            logits = batch_logits[batch_idx].clone()
+            new_logits = batch_logits[batch_idx].clone()
+            batch_idx += 1
+            real_idx = 0    
+            while real_idx < len(logits):
+                for _ in range(num_sims):
+                    def do_sim(root_node):
+                        logits_copy = logits.clone()
+                        curr_node = root_node
+                        exit_early = False
+                        prior_idx = 0
+                        while curr_node["children"] is not None:
+                            if prior_idx < (len(logits_copy)-1):
+                                max_uct = -1e7
+                                max_uct_idx = None
+                                for i, child in enumerate(curr_node["children"]):
+                                    child["U"] = (
+                                        self.c*child["P"]*np.log(curr_node["N"]))/(1 + child["N"])
+                                    if (child["Q"] + child["U"]) > max_uct:
+                                        max_uct_idx = i
+                                curr_node = curr_node["children"][max_uct_idx]
+                                logits_copy[prior_idx] = self.linspace[max_uct_idx]
+                                prior_idx += 1
+                            else:
+                                exit_early = True
+                                break
+
+                        if not exit_early:
+                            prior = logits_copy[prior_idx].detach().data.numpy()
+                            #so I can either add a value head that looks at logits and
+                            #outputs a predicted value, or we could just compute it
+                            # if not use_value:
+                            #     # out = self.model(data)
+                            #     # out = F.log_softmax(out, dim=1)
+                            #     pred = logits_copy.data.max(0, keepdim=True)[0]
+                            #     batch_correct = pred.eq(
+                            #         target.data.view_as(pred)).long().cpu().sum().float()
+                            #     true_value = ((batch_correct/len(target)) - .5)*2
+                            #     value_pred = self.value(logits_copy).squeeze()
+                            #     value_loss += F.mse_loss(value_pred.mean(), true_value)
+                            #     value = (true_value/2) + .5
+                            # else:
+                            value = (self.value(logits_copy).squeeze()/2) + .5
+                            #so one issue is that prior wont be between 0 and 1.
+                            #I could use the probas instead.
+                            linspace_prior = -np.log(np.abs(self.linspace - prior))
+                            linspace_prior /= linspace_prior.sum()
+
+                            curr_node["children"] = []
+
+                            for p in linspace_prior:
+                                U = p
+
+                                child = {
+                                    "N": 0,
+                                    "W": 0,
+                                    "Q": 0,
+                                    "U": U,
+                                    "P": p,
+                                    "children": None,
+                                    "parent": curr_node
+                                }
+
+                                curr_node["children"].append(child)
+
+                            while curr_node["parent"] is not None:
+                                curr_node["N"] += 1
+                                curr_node["W"] += value
+                                curr_node["Q"] = curr_node["W"]/curr_node["N"]
+
+                                curr_node = curr_node["parent"]
+
+                            root_node = curr_node
+                            root_node["N"] += 1
                         else:
-                            exit_early = True
-                            break
+                            while curr_node["parent"] is not None:
+                                curr_node = curr_node["parent"]
 
-                    if not exit_early:
-                        prior = encoded_copy[prior_idx].detach().data.numpy()
-                        if not use_value:
-                            for group_out. group in zip(self.group_outs, list(self.model.parameters())):
-                                group.data = group_out(
-                                    encoded_copy).resize_as(group)
-                            self.model.eval()
-                            out = self.model(data)
-                            pred = out.data.max(1, keepdim=True)[1]
-                            batch_correct = pred.eq(
-                                target.data.view_as(pred)).long().cpu().sum().float()
-                            true_value = ((batch_correct/len(target)) - .5)*2
-                            value_pred = self.value(encoded_copy)
-                            value_loss += F.mse_loss(value_pred, true_value)
-                            value = true_value
-                        else:
-                            value = self.value(encoded_copy).squeeze()
-                        linspace_prior = np.log(np.abs(self.linspace - prior + 1e-7))
+                            root_node = curr_node
 
-                        curr_node["children"] = []
+                        return root_node
+                    root_node = do_sim(root_node)
+                    # for _ in range(1):
+                    #     root_node, value_loss = do_sim(root_node, value_loss, use_value=True)
 
-                        for p in linspace_prior:
-                            U = p
+                #uhhh so lets think about this we are trying to match the probas to
+                #improved search probas.
+                #we are tweaking each of the pixels so that they should generalize better.
+                #so maybe we need two batches, one orig and one new one?
+                #we need a way so that 
 
-                            child = {
-                                "N": 0,
-                                "W": 0,
-                                "Q": 0,
-                                "U": U,
-                                "P": p,
-                                "children": None,
-                                "parent": curr_node
-                            }
+                #as of right now I am tweaking easy of 
 
-                            curr_node["children"].append(child)
+                #btw the old code had the prior thing totally wrong
+                #idk if it could even work
+                #I have a bunch of random numbers, we could divide by the max and the min
+                #and make those the priors
 
-                        while curr_node["parent"] is not None:
-                            curr_node["N"] += 1
-                            curr_node["W"] += value
-                            curr_node["Q"] = curr_node["W"]/curr_node["N"]
+                #the issue with this probas training is that we have the label
+                #maybe it could be unsupervised just from a value signal, but idk
 
-                            curr_node = curr_node["parent"]
+                #so let me think if that even makes sense though
+                #when would this be good?
+                #we need a specifiable goal, i.e. an average accuracy, an average loss,
+                #etc
 
-                        curr_node["N"] += 1
-                        root_node = curr_node
-                    else:
-                        while curr_node["parent"] is not None:
-                            curr_node = curr_node["parent"]
+                visits_idx = np.argmax([child["N"]
+                                    for child in root_node["children"]])
 
-                        root_node = curr_node
+                new_logits[real_idx] = self.linspace[visits_idx]
+                root_node = root_node["children"][visits_idx]
+                root_node["parent"] = None
+                real_idx += 1
 
-                    return root_node, value_loss
-                root_node, value_loss = do_sim(root_node, value_loss, use_value=False)
-                # for _ in range(1):
-                #     root_node, value_loss = do_sim(root_node, value_loss, use_value=True)
-
-            
-
-            visits_idx = np.argmax([child["N"]
-                                   for child in root_node["children"]])
-
-
-            new_encoded[real_idx] = self.linspace[visits_idx]
-            root_node = root_node["children"][visits_idx]
-            root_node["parent"] = None
-            real_idx += 1
-
+            new_logits_list.append(new_logits.unsqueeze(0))
         # encoded_idx = 0
         # curr_node = root_node
         # encoded_copy = encoded.clone()
@@ -279,17 +285,76 @@ class MetaLearner(nn.Module):
         #     curr_node = curr_node["children"][visits_idx]
         #     encoded_idx += 1
 
-        improved_encoding_loss = F.mse_loss(encoded, new_encoded)
-        total_loss = improved_encoding_loss + reconstruction_loss*.6
+        self.model.train()
+        self.train()
+        self.model_optim.zero_grad()
+        self.optim.zero_grad()
+        
+        batch_logits = F.softmax(self.model(data), dim=1)
+        batch_new_logits = torch.cat(new_logits_list)
+
+        orig_value = self.value(batch_logits)
+        new_value = self.value(batch_new_logits)
+
+        pred = batch_logits.data.max(1, keepdim=True)[1] 
+        batch_correct = pred.eq(
+            target.data.view_as(pred)).long().cpu().sum().float()
+        true_value = ((batch_correct/len(target)) - .5)*2
+
+        value_loss += F.mse_loss(orig_value.mean(), true_value)
+
+        pred = batch_new_logits.data.max(1, keepdim=True)[1] 
+        batch_correct = pred.eq(
+            target.data.view_as(pred)).long().cpu().sum().float()
+        new_true_value = ((batch_correct/len(target)) - .5)*2
+
+        value_loss += F.mse_loss(new_value.mean(), new_true_value)
+
+        matching_loss = 0
+        #may need to get the logits again since we switched between training and eval
+        new_proba_final = 0
+        for new_proba in batch_new_logits:
+            new_proba_final += new_proba
+
+        new_proba_final /= len(batch_new_logits)
+
+        old_proba_final = 0
+        for old_proba in batch_logits:
+            old_proba_final += old_proba
+
+        old_proba_final /= len(batch_new_logits)
+
+        npf = new_proba_final.unsqueeze(0)
+        opf = old_proba_final.unsqueeze(-1)
+        matching_loss = -torch.mm(npf, torch.log(opf))
+        # for new_probas, old_probas in zip(batch_new_logits.mean(), batch_logits.mean()):
+        #     new_probas = new_probas.unsqueeze(0)
+        #     old_probas = old_probas.unsqueeze(-1)
+        #     matching_loss += -torch.mm(new_probas, torch.log(old_probas))
+        # matching_loss /= len(batch_new_logits)
+        #model_loss = torch.mm(batch_new_logits)F.mse_loss(batch_logits, batch_new_logits)
+
+        total_loss = matching_loss + value_loss
+        total_loss.backward()
+        
         #+ value_loss 
             #
-        total_loss.backward()
+        self.model_optim.step()
         self.optim.step()
 
-        for group_out. group in zip(self.group_outs, list(self.model.parameters())):
-            group.data = group_out(new_encoded).resize_as(group)
-
         print(total_loss.detach().data.numpy())
+
+        self.model.eval()
+        output = F.log_softmax(self.model(data), dim=1)
+
+        pred = output.data.max(1, keepdim=True)[1]
+        batch_correct = pred.eq(
+            target.data.view_as(pred)).long().cpu().sum().float()
+        batch_accuracy = batch_correct/len(target)
+        # loss = F.nll_loss(output, target)
+        # loss.backward()
+        # optimizer.step()
+        print('Accuracy: {:.3f}'.format(batch_accuracy))
 
     #     child_priors[:] = self.linspace
     #     child_priors = np.log(

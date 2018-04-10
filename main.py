@@ -8,7 +8,7 @@ from torch.autograd import Variable
 
 class ARGS:
     def __init__(self):
-        self.batch_size=64
+        self.batch_size=128
         self.test_batch_size=1000
         self.epochs = 10
         self.lr=0.01
@@ -56,7 +56,9 @@ class Net(nn.Module):
         x = F.relu(self.fc1(x))
         x = F.dropout(x, training=self.training)
         x = self.fc2(x)
-        return F.log_softmax(x, dim=1)
+        return x
+        # return F.log_softmax(x, dim=1)
+
 
 model = Net()
 if args.cuda:
@@ -176,7 +178,7 @@ def ucb_test(az):
 from ipdb import set_trace
 from models import MetaLearner
 
-meta_net = MetaLearner(model, (1, 28, 28))
+meta_net = MetaLearner(model, (1, 28, 28), model_optim=optimizer)
 
 model.train()
 meta_net.train()
@@ -185,18 +187,7 @@ for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.cuda(), target.cuda()
     data, target = Variable(data), Variable(target)
 
-    optimizer.zero_grad()
     meta_net(data, target)
-    model.eval()
-    output = model(data)
-    pred = output.data.max(1, keepdim=True)[1]
-    batch_correct = pred.eq(
-        target.data.view_as(pred)).long().cpu().sum().float()
-    batch_accuracy = batch_correct/len(target)
-    # loss = F.nll_loss(output, target)
-    # loss.backward()
-    # optimizer.step()
-    print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
 
 # for batch_idx, (data, target) in enumerate(train_loader):
 #     if args.cuda:
