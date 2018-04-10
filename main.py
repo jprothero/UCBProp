@@ -62,7 +62,7 @@ model = Net()
 if args.cuda:
     model.cuda()
 
-optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+optimizer = optim.Adam(model.parameters(), lr=.01)
 
 def train(epoch):
     model.train()
@@ -178,10 +178,32 @@ from models import MetaLearner
 
 meta_net = MetaLearner(model, (1, 28, 28))
 
+model.train()
+meta_net.train()
 for batch_idx, (data, target) in enumerate(train_loader):
     if args.cuda:
         data, target = data.cuda(), target.cuda()
     data, target = Variable(data), Variable(target)
-    # optimizer.zero_grad()
-    _, batch_accuracy = meta_net(data, target, train=True)
-    print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
+
+    optimizer.zero_grad()
+    meta_net(data, target)
+    model.eval()
+    output = model(data)
+    pred = output.data.max(1, keepdim=True)[1]
+    batch_correct = pred.eq(
+        target.data.view_as(pred)).long().cpu().sum().float()
+    batch_accuracy = batch_correct/len(target)
+    # loss = F.nll_loss(output, target)
+    # loss.backward()
+    # optimizer.step()
+    if batch_idx % args.log_interval == 0:
+        print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
+
+# for batch_idx, (data, target) in enumerate(train_loader):
+#     if args.cuda:
+#         data, target = data.cuda(), target.cuda()
+    
+#     data, target = Variable(data), Variable(target)
+#     # optimizer.zero_grad()
+#     meta_net(data, target, train=True)
+#     print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
