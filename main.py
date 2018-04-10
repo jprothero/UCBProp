@@ -196,8 +196,7 @@ for batch_idx, (data, target) in enumerate(train_loader):
     # loss = F.nll_loss(output, target)
     # loss.backward()
     # optimizer.step()
-    if batch_idx % args.log_interval == 0:
-        print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
+    print('Batch: {}, Accuracy: {:.3f}'.format(batch_idx, batch_accuracy))
 
 # for batch_idx, (data, target) in enumerate(train_loader):
 #     if args.cuda:

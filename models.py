@@ -26,8 +26,8 @@ import torch.nn.functional as F
 
 
 class MetaLearner(nn.Module):
-    def __init__(self, model, image_size, param_bottleneck=400,
-                 h_dims=512, ae_dims=10, num_slices=10, c=1, use_value=False):
+    def __init__(self, model, image_size, param_bottleneck=200,
+                 h_dims=256, ae_dims=5, num_slices=1000, c=1, use_value=False):
         super(MetaLearner, self).__init__()
         self.use_value = False
         self.num_slices = num_slices
@@ -175,8 +175,9 @@ class MetaLearner(nn.Module):
         from tqdm import tqdm
         value_loss = 0
         
+        new_encoded = encoded.clone()
 
-        num_sims = 10
+        num_sims = 100
         real_idx = 0
         while real_idx < len(encoded):
             for _ in tqdm(range(num_sims)):
@@ -254,33 +255,39 @@ class MetaLearner(nn.Module):
 
                     return root_node, value_loss
                 root_node, value_loss = do_sim(root_node, value_loss, use_value=False)
-                # for _ in range(3):
+                # for _ in range(1):
                 #     root_node, value_loss = do_sim(root_node, value_loss, use_value=True)
 
-            visits_idx = np.argmax(child["N"]
-                                   for child in root_node["children"])
+            
 
+            visits_idx = np.argmax([child["N"]
+                                   for child in root_node["children"]])
+
+
+            new_encoded[real_idx] = self.linspace[visits_idx]
             root_node = root_node["children"][visits_idx]
             root_node["parent"] = None
             real_idx += 1
 
-        encoded_idx = 0
-        curr_node = root_node
-        encoded_copy = encoded.clone()
-        while curr_node["children"] is not None:
-            visits_idx = np.argmax(child["N"]
-                                   for child in curr_node["children"])
-            encoded_copy[encoded_idx] = self.linspace[visits_idx]
-            curr_node = curr_node["children"]["visits_idx"]
-            encoded_idx += 1
+        # encoded_idx = 0
+        # curr_node = root_node
+        # encoded_copy = encoded.clone()
+        # while curr_node["children"] is not None:
+        #     visits_idx = np.argmax(child["N"]
+        #                            for child in curr_node["children"])
+        #     encoded_copy[encoded_idx] = self.linspace[visits_idx]
+        #     curr_node = curr_node["children"][visits_idx]
+        #     encoded_idx += 1
 
-        improved_encoding_loss = F.mse_loss(encoded, encoded_copy)
-        total_loss = improved_encoding_loss + reconstruction_loss + value_loss
+        improved_encoding_loss = F.mse_loss(encoded, new_encoded)
+        total_loss = improved_encoding_loss + reconstruction_loss*.6
+        #+ value_loss 
+            #
         total_loss.backward()
         self.optim.step()
 
         for group_out. group in zip(self.group_outs, list(self.model.parameters())):
-            group.data = group_out(encoded_copy).resize_as(group)
+            group.data = group_out(new_encoded).resize_as(group)
 
         print(total_loss.detach().data.numpy())
 
